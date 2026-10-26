@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Offline Zpravodajský Portál</title>
+    <link rel="manifest" href="/manifest.json">
+    <style>
+        :root {
+            --primary: #1a73e8;
+            --bg: #f8f9fa;
+            --card-bg: #ffffff;
+            --text: #202124;
+            --muted: #5f6368;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            margin: 0;
+            padding: 0;
+        }
+        header {
+            background-color: var(--primary);
+            color: white;
+            padding: 1rem;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .status-badge {
+            padding: 0.25rem 0.75rem;
+            border-radius: 50px;
+            font-size: 0.85rem;
+            font-weight: bold;
+        }
+        .online { background-color: #34a853; color: white; }
+        .offline { background-color: #ea4335; color: white; }
+        .container {
+            max-width: 800px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+        }
+        .controls {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+            flex-wrap: wrap;
+        }
+        button {
+            background-color: var(--primary);
+            color: white;
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        button:hover { opacity: 0.9; }
+        .card {
+            background: var(--card-bg);
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .card h2 { margin-top: 0; font-size: 1.3rem; }
+        .card .meta {
+            font-size: 0.85rem;
+            color: var(--muted);
+            margin-bottom: 0.8rem;
+        }
+        .card p { line-height: 1.5; }
+        .card a {
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>Offline Zpravodaj</h1>
+    <div id="network-status" class="status-badge online">Online</div>
+</header>
+
+<div class="container">
+    <div class="controls">
+        <button id="sync-btn">Synchronizovat zprávy</button>
+        <span id="last-sync-time" style="align-self: center; color: var(--muted);"></span>
+    </div>
+    
+    <main id="news-feed">
+        <p>Načítám zprávy...</p>
+    </main>
+</div>
+
+<script>
+    const API_URL = 'http://localhost:5000/api';
+    let db;
+
+    // Open IndexedDB
+    const request = indexedDB.open('NewsDatabase', 1);
+    request.onupgradeneeded = (e) => {
+        db = e.target.result;
+        db.createObjectStore('articles', { keyPath: 'id' });
+    };
+    request.onsuccess = (e) => {
+        db = e.target.result;
+        loadNews();
+    };
+
+    // Monitor online/offline state
+    function updateOnlineStatus() {
+        const status = document.getElementById('network-status');
+        if (navigator.onLine) {
+            status.textContent = 'Online';
+            status.className = 'status-badge online';
+            syncWithServer();
+        } else {
+            status.textContent = 'Offline režim';
+            status.className = 'status-badge offline';
+        }
+    }
+    window.addEventListener('online', updateOnlineStatus);
+    window.addEventListener('offline', updateOnlineStatus);
+    updateOnlineStatus();
+
+    async function syncWithServer() {
+        if (!navigator.onLine) return;
+        try {
+            const response = await fetch(`${API_URL}/news`);
+            const articles = await response.json();
+            
+            // Save to IndexedDB
+            const tx = db.transaction('articles', 'readwrite');
+            const store = tx.objectStore('articles');
+            articles.forEach(article => store.put(article));
+            
+            localStorage.setItem('lastSync', new Date().toLocaleString());
+            document.getElementById('last-sync-time').textContent = 'Poslední synchronizace: ' + localStorage.getItem('lastSync');
+            
+            loadNews();
+        } catch (err) {
+            console.error('Failed to sync with backend', err);
+        }
+    }
+
+    function loadNews() {
+        if (!db) return;
+        const tx = db.transaction('articles', 'readonly');
+        const store = tx.objectStore('articles');
+        const getAll = store.getAll();
+        
+        getAll.onsuccess = () => {
+            const articles = getAll.result.sort((a, b) => b.fetched_at.localeCompare(a.fetched_at));
+            const feed = document.getElementById('news-feed');
+            if (articles.length === 0) {
+                feed.innerHTML = '<p>Žádné offline zprávy k dispozici. Připojte se k internetu k první synchronizaci.</p>';
+                return;
+            }
+            
+            feed.innerHTML = articles.map(art => `
+                <article class="card">
+                    <div class="meta">${art.source_name} | ${art.published_at || ''}</div>
+                    <h2>${art.title}</h2>
+                    <p>${art.summary || 'Bez popisu.'}</p>
+                    <a href="${art.link}" target="_blank">Číst celý článek</a>
+                </article>
+            `).join('');
+        };
+    }
+
+    document.getElementById('sync-btn').addEventListener('click', () => {
+        syncWithServer();
+    });
+
+    // Register Service Worker for true PWA caching
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/sw.js').then(() => {
+            console.log('Service Worker Registered');
+        });
+    }
+</script>
+</body>
+</html>
